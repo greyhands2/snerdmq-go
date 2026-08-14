@@ -65,7 +65,7 @@ func main() {
 	if resp.StatusCode == 404 {
 		fmt.Printf("\n[Snerd] WARN: Binary not found at %s\n", downloadURL)
 		fmt.Println("[Snerd] (This is expected if you haven't published a GitHub Release yet)")
-		fmt.Println("[Snerd] Please provide BinaryPath manually when initializing SnerdQueue.\n")
+		fmt.Println("[Snerd] Please provide BinaryPath manually when initializing SnerdQueue.")
 		os.Exit(0)
 	}
 
