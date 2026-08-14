@@ -258,7 +258,7 @@ func (q *SnerdQueue) send(msg map[string]interface{}) {
 	q.stdin.Write(b)
 }
 
-func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetries int, retryAfterHours float64, rateLimitGroup string, maxPerMinute int, autoDedupe *bool) error {
+func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetries int, retryAfterHours float64, rateLimitGroup string, maxPerMinute int, autoDedupe *bool, urgencyScore *float64) error {
 	q.shutdownMutex.RLock()
 	if q.process == nil || q.shuttingDown {
 		q.shutdownMutex.RUnlock()
@@ -288,6 +288,9 @@ func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetri
 	}
 	if autoDedupe != nil {
 		payload["auto_dedupe"] = *autoDedupe
+	}
+	if urgencyScore != nil {
+		payload["urgency_score"] = *urgencyScore
 	}
 
 	ch := make(chan error, 1)
