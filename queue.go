@@ -20,6 +20,8 @@ type SnerdQueue struct {
 	stdin         io.WriteCloser
 	handlers      map[string]func(map[string]interface{}) error
 	handlersMutex sync.RWMutex
+	pendingAcks   map[string]chan error
+	pendingMutex  sync.RWMutex
 	shuttingDown  bool
 	shutdownMutex sync.RWMutex
 	done          chan struct{}
@@ -57,6 +59,7 @@ func NewSnerdQueue(config ...SnerdQueueConfig) (*SnerdQueue, error) {
 		binaryPath:  binPath,
 		storagePath: storePath,
 		handlers:    make(map[string]func(map[string]interface{}) error),
+		pendingAcks: make(map[string]chan error),
 		done:        make(chan struct{}),
 	}
 
@@ -217,6 +220,26 @@ func (q *SnerdQueue) handleEngineMessage(msg map[string]interface{}) {
 			})
 		}
 
+	} else if action == "ack" {
+		taskID, _ := msg["task_id"].(string)
+		q.pendingMutex.Lock()
+		if ch, exists := q.pendingAcks[taskID]; exists {
+			delete(q.pendingAcks, taskID)
+			ch <- nil
+		}
+		q.pendingMutex.Unlock()
+	} else if action == "error" {
+		taskID, _ := msg["task_id"].(string)
+		errorMsg, _ := msg["message"].(string)
+		
+		q.pendingMutex.Lock()
+		if ch, exists := q.pendingAcks[taskID]; exists {
+			delete(q.pendingAcks, taskID)
+			ch <- fmt.Errorf("%s", errorMsg)
+		} else {
+			fmt.Fprintf(os.Stderr, "[Snerd] Error from engine: %s\n", errorMsg)
+		}
+		q.pendingMutex.Unlock()
 	} else if action == "max_retries_reached" {
 		fmt.Fprintf(os.Stderr, "[Snerd] Dead Letter Queue: Task %v (%v) permanently failed.\n", msg["task_id"], msg["task_type"])
 	}
@@ -235,7 +258,7 @@ func (q *SnerdQueue) send(msg map[string]interface{}) {
 	q.stdin.Write(b)
 }
 
-func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetries int, retryAfterHours float64, rateLimitGroup string, maxPerMinute int) error {
+func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetries int, retryAfterHours float64, rateLimitGroup string, maxPerMinute int, autoDedupe *bool) error {
 	q.shutdownMutex.RLock()
 	if q.process == nil || q.shuttingDown {
 		q.shutdownMutex.RUnlock()
@@ -263,10 +286,18 @@ func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetri
 	if maxPerMinute > 0 {
 		payload["max_per_minute"] = maxPerMinute
 	}
+	if autoDedupe != nil {
+		payload["auto_dedupe"] = *autoDedupe
+	}
+
+	ch := make(chan error, 1)
+	q.pendingMutex.Lock()
+	q.pendingAcks[taskID] = ch
+	q.pendingMutex.Unlock()
 
 	q.send(payload)
 
-	return nil
+	return <-ch
 }
 
 func (q *SnerdQueue) Shutdown() {
