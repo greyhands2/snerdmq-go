@@ -235,7 +235,7 @@ func (q *SnerdQueue) send(msg map[string]interface{}) {
 	q.stdin.Write(b)
 }
 
-func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetries int, retryAfterHours float64) error {
+func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetries int, retryAfterHours float64, rateLimitGroup string, maxPerMinute int) error {
 	q.shutdownMutex.RLock()
 	if q.process == nil || q.shuttingDown {
 		q.shutdownMutex.RUnlock()
@@ -248,14 +248,23 @@ func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetri
 		return err
 	}
 
-	q.send(map[string]interface{}{
+	payload := map[string]interface{}{
 		"action":            "enqueue",
 		"task_id":           taskID,
 		"task_type":         taskType,
 		"task_data":         string(dataBytes),
 		"max_retries":       maxRetries,
 		"retry_after_hours": retryAfterHours,
-	})
+	}
+
+	if rateLimitGroup != "" {
+		payload["rate_limit_group"] = rateLimitGroup
+	}
+	if maxPerMinute > 0 {
+		payload["max_per_minute"] = maxPerMinute
+	}
+
+	q.send(payload)
 
 	return nil
 }

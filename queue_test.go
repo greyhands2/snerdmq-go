@@ -65,6 +65,8 @@ func TestSnerdQueueIntegration(t *testing.T) {
 		map[string]interface{}{"user_id": "john_wick", "message": "Baba Yaga"},
 		3,
 		0,
+		"",
+		0,
 	)
 	if err != nil {
 		t.Fatalf("Failed to enqueue: %v", err)
