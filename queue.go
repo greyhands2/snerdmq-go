@@ -2,15 +2,20 @@ package snerdmq
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/gorilla/websocket"
 )
 
 type SnerdQueue struct {
@@ -18,7 +23,10 @@ type SnerdQueue struct {
 	storagePath   string
 	process       *exec.Cmd
 	stdin         io.WriteCloser
-	handlers      map[string]func(map[string]interface{}) error
+	handlers      map[string]func(context.Context, map[string]interface{}) error
+	maxRetryHandlers map[string]func(context.Context, map[string]interface{}) error
+	wsClients     map[*websocket.Conn]bool
+	wsClientsLock sync.RWMutex
 	handlersMutex sync.RWMutex
 	pendingAcks   map[string]chan error
 	pendingMutex  sync.RWMutex
@@ -58,7 +66,9 @@ func NewSnerdQueue(config ...SnerdQueueConfig) (*SnerdQueue, error) {
 	queue := &SnerdQueue{
 		binaryPath:  binPath,
 		storagePath: storePath,
-		handlers:    make(map[string]func(map[string]interface{}) error),
+		handlers:    make(map[string]func(context.Context, map[string]interface{}) error),
+		maxRetryHandlers: make(map[string]func(context.Context, map[string]interface{}) error),
+		wsClients:   make(map[*websocket.Conn]bool),
 		pendingAcks: make(map[string]chan error),
 		done:        make(chan struct{}),
 	}
@@ -79,7 +89,7 @@ func runtimeOS() string {
 	return os.Getenv("GOOS") // Simplified for this example, actually we just use runtime.GOOS in real usage
 }
 
-func (q *SnerdQueue) RegisterHandler(taskType string, handler func(map[string]interface{}) error) {
+func (q *SnerdQueue) RegisterHandler(taskType string, handler func(context.Context, map[string]interface{}) error) {
 	q.handlersMutex.Lock()
 	q.handlers[taskType] = handler
 	q.handlersMutex.Unlock()
@@ -93,6 +103,12 @@ func (q *SnerdQueue) RegisterHandler(taskType string, handler func(map[string]in
 		})
 	}
 	q.shutdownMutex.RUnlock()
+}
+
+func (q *SnerdQueue) RegisterMaxRetryHandler(taskType string, handler func(context.Context, map[string]interface{}) error) {
+	q.handlersMutex.Lock()
+	q.maxRetryHandlers[taskType] = handler
+	q.handlersMutex.Unlock()
 }
 
 func (q *SnerdQueue) StartListening() error {
@@ -204,7 +220,8 @@ func (q *SnerdQueue) handleEngineMessage(msg map[string]interface{}) {
 			return
 		}
 
-		err := handler(taskData)
+		ctx := context.WithValue(context.Background(), "taskID", taskID)
+		err := handler(ctx, taskData)
 		if err != nil {
 			q.send(map[string]interface{}{
 				"action":    "result",
@@ -240,8 +257,37 @@ func (q *SnerdQueue) handleEngineMessage(msg map[string]interface{}) {
 			fmt.Fprintf(os.Stderr, "[Snerd] Error from engine: %s\n", errorMsg)
 		}
 		q.pendingMutex.Unlock()
+	} else if action == "progress" {
+		lineBytes, _ := json.Marshal(msg)
+		
+		q.wsClientsLock.RLock()
+		for client := range q.wsClients {
+			client.WriteMessage(websocket.TextMessage, lineBytes)
+		}
+		q.wsClientsLock.RUnlock()
 	} else if action == "max_retries_reached" {
-		fmt.Fprintf(os.Stderr, "[Snerd] Dead Letter Queue: Task %v (%v) permanently failed.\n", msg["task_id"], msg["task_type"])
+		taskType, _ := msg["task_type"].(string)
+		taskID, _ := msg["task_id"].(string)
+		taskDataRaw := msg["task_data"]
+
+		var taskData map[string]interface{}
+		if strData, isStr := taskDataRaw.(string); isStr {
+			json.Unmarshal([]byte(strData), &taskData)
+		}
+
+		q.handlersMutex.RLock()
+		handler, exists := q.maxRetryHandlers[taskType]
+		q.handlersMutex.RUnlock()
+
+		if exists {
+			ctx := context.WithValue(context.Background(), "taskID", taskID)
+			err := handler(ctx, taskData)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[Snerd] Error in max retry handler for task %s: %v\n", taskID, err)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[Snerd] Dead Letter Queue: Task %v (%v) permanently failed.\n", taskID, taskType)
+		}
 	}
 }
 
@@ -319,4 +365,161 @@ func (q *SnerdQueue) Shutdown() {
 
 func (q *SnerdQueue) Wait() {
 	<-q.done
+}
+
+
+func (q *SnerdQueue) YieldProgress(ctx context.Context, data interface{}) error {
+	taskID, ok := ctx.Value("taskID").(string)
+	if !ok || taskID == "" {
+		return fmt.Errorf("[Snerd] YieldProgress must be called with a valid task context")
+	}
+
+	dataBytes, _ := json.Marshal(data)
+	payload := map[string]interface{}{
+		"action":  "progress",
+		"task_id": taskID,
+		"data":    string(dataBytes),
+	}
+	q.send(payload)
+	return nil
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func (q *SnerdQueue) StartDashboard(port int) {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
+		
+		storage := "./.snerdata"
+		if q.storagePath != "" {
+			storage = q.storagePath
+		}
+		tasksPath := filepath.Join(storage, "tasks", "tasks.log")
+		
+		enqueued, processed, failed := 0, 0, 0
+		if file, err := os.Open(tasksPath); err == nil {
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if line == "" {
+					continue
+				}
+				enqueued++
+				if strings.Contains(line, `"deletedAt":"`) {
+					if strings.Contains(line, `"lastJobError":"`) {
+						failed++
+					} else {
+						processed++
+					}
+				}
+			}
+			file.Close()
+		}
+		fmt.Fprintf(w, `{"enqueued":%d,"processed":%d,"failed":%d}`, enqueued, processed, failed)
+	})
+
+	mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
+		
+		storage := "./.snerdata"
+		if q.storagePath != "" {
+			storage = q.storagePath
+		}
+		tasksPath := filepath.Join(storage, "tasks", "tasks.log")
+		
+		tasksMap := make(map[string]map[string]interface{})
+		if file, err := os.Open(tasksPath); err == nil {
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if line == "" {
+					continue
+				}
+				var t map[string]interface{}
+				if json.Unmarshal([]byte(line), &t) == nil {
+					if tid, ok := t["taskId"].(string); ok {
+						tasksMap[tid] = t
+					}
+				}
+			}
+			file.Close()
+		}
+
+		var res []map[string]interface{}
+		for _, t := range tasksMap {
+			status := "queued"
+			if t["deletedAt"] != nil {
+				if t["lastJobError"] != nil {
+					status = "failed"
+				} else {
+					status = "completed"
+				}
+			} else {
+				if t["lastJobError"] != nil {
+					status = "failed"
+				}
+			}
+			rtCount, _ := t["retryCount"].(float64)
+			maxRt, _ := t["maxRetries"].(float64)
+			rtAfter, _ := t["retryAfterTime"].(string)
+
+			res = append(res, map[string]interface{}{
+				"id":             t["taskId"],
+				"type":           t["taskType"],
+				"status":         status,
+				"progress":       0,
+				"retryCount":     rtCount,
+				"maxRetries":     maxRt,
+				"retryAfterTime": rtAfter,
+			})
+		}
+		json.NewEncoder(w).Encode(res)
+	})
+
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		q.wsClientsLock.Lock()
+		q.wsClients[conn] = true
+		q.wsClientsLock.Unlock()
+
+		defer func() {
+			q.wsClientsLock.Lock()
+			delete(q.wsClients, conn)
+			q.wsClientsLock.Unlock()
+			conn.Close()
+		}()
+
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				break
+			}
+		}
+	})
+
+	// Static files
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			staticFile := filepath.Join("static", "index.html")
+			if _, err := os.Stat(staticFile); os.IsNotExist(err) {
+				staticFile = filepath.Join("..", "static", "index.html")
+			}
+			http.ServeFile(w, r, staticFile)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	go func() {
+		fmt.Printf("[Snerd] Dashboard running on http://localhost:%d\n", port)
+		http.ListenAndServe(fmt.Sprintf(":%d", port), mux)
+	}()
 }

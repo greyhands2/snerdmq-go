@@ -1,6 +1,7 @@
 package snerdmq
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,7 +38,7 @@ func TestSnerdQueueIntegration(t *testing.T) {
 
 	jobCompleted := make(chan bool)
 
-	queue.RegisterHandler("test_go_notification", func(data map[string]interface{}) error {
+	queue.RegisterHandler("test_go_notification", func(ctx context.Context, data map[string]interface{}) error {
 		userID := data["user_id"].(string)
 		message := data["message"].(string)
 
@@ -67,6 +68,7 @@ func TestSnerdQueueIntegration(t *testing.T) {
 		0,
 		"",
 		0,
+		nil,
 		nil,
 	)
 	if err != nil {
