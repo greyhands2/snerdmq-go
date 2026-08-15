@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>🚀 SnerdMQ Go SDK</h1>
+  <h1>🚀 SnerdMQ Go SDK (v1.0.2)</h1>
   <p>A zero-config, persistent background job queue for Go microservices. The official Go client for the SnerdMQ Rust daemon.</p>
 
   [![Go Reference](https://pkg.go.dev/badge/github.com/greyhands2/snerdmq-go.svg)](https://pkg.go.dev/github.com/greyhands2/snerdmq-go)
