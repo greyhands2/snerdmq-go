@@ -75,6 +75,7 @@ func main() {
 			AutoDedupe:   true,
 			UrgencyScore: 0.99,
 			Cron:         "1h", // Runs every 1 hour!
+			WebhookUrl:   "https://api.example.com/webhook", // Execute via HTTP instead of local handlers
 		},
 	)
 
@@ -91,6 +92,12 @@ To power complex workflows, tasks can now be configured with advanced orchestrat
 * **`RateLimitGroup` (`string`)** & **`MaxPerMinute` (`int`)**: If the queue processes more tasks in this group than the allowed limit within a 60-second window, further tasks are temporarily paused.
 * **`ExecuteAt` (`string` | `time.Time`)**: A timestamp of when the job should be executed in the future.
 * **`Cron` (`string`)**: A cron expression (e.g. `"0 * * * *"`) for recurring jobs. Shorthands like `"2h"` or `"10m"` are also supported.
+* **`WebhookUrl` (`string`)**: By providing a webhook URL, SnerdMQ will completely bypass your local Go handlers and dispatch the task payload via an HTTP POST request directly to the specified URL.
+
+### 🌐 HTTP Webhooks (Serverless Execution)
+You can configure a task to execute externally via an HTTP POST request. By setting a `WebhookUrl`, the internal background processor will skip any registered handlers (`queue.RegisterHandler`) and directly invoke the HTTP endpoint.
+
+If the HTTP endpoint returns a non-200 status code, it triggers a retry. If it permanently fails (reaches `maxRetries`), the Dead Letter Queue event is automatically fired via a final HTTP POST to the same `WebhookUrl` but with the header `X-SnerdMQ-Event: MaxRetriesReached`.
 
 ### 🕒 Cron Jobs vs. Retryable Jobs
 > - **A Cron Job** is a *Repeatable Job* that executes again **only after a success**, on a fixed schedule.
