@@ -65,18 +65,24 @@ func main() {
 	fmt.Println("SnerdMQ Go SDK is listening for jobs...")
 
 	// 4. Enqueue a job from anywhere in your codebase
+	autoDedupe := true
+	urgencyScore := 0.99
+	cronStr := "1h"
+	webhookUrl := "https://api.example.com/webhook"
+
 	queue.Enqueue(
 		"email-123",  // Unique Task ID
 		"send_email", // Task Type
 		map[string]interface{}{"to": "john@wick.com", "subject": "Continental Update"}, // Payload
 		3,            // Max Retries
 		0.0,          // Retry After Hours
-		snerdmq.EnqueueOpts{
-			AutoDedupe:   true,
-			UrgencyScore: 0.99,
-			Cron:         "1h", // Runs every 1 hour!
-			WebhookUrl:   "https://api.example.com/webhook", // Execute via HTTP instead of local handlers
-		},
+		"email_api",  // Rate Limit Group
+		100,          // Max Per Minute
+		&autoDedupe,  // Auto Dedupe
+		&urgencyScore,// Urgency Score
+		nil,          // Execute At
+		&cronStr,     // Cron: Runs every 1 hour!
+		&webhookUrl,  // Webhook URL: Execute via HTTP instead of local handlers
 	)
 
 	// Keep main thread alive
@@ -85,7 +91,7 @@ func main() {
 ```
 
 ### ⚙️ Advanced Task Configuration (v1.0.2)
-To power complex workflows, tasks can now be configured with advanced orchestration parameters via `EnqueueOpts`:
+To power complex workflows, tasks can now be configured with advanced orchestration parameters via the `Enqueue` positional arguments:
 
 * **`AutoDedupe` (`bool`)**: If set to `true`, the daemon computes a cryptographic hash of the task type and data. If an identical payload is pending execution, this new task is silently dropped.
 * **`UrgencyScore` (`float64`)**: A value (e.g. `0.99`) used to bypass the standard FIFO queue. SnerdMQ uses a Binary Max-Heap to continually float tasks with the highest urgency score to the front. Standard tasks default to `0.0`.
