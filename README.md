@@ -71,6 +71,11 @@ func main() {
 		map[string]interface{}{"to": "john@wick.com", "subject": "Continental Update"}, // Payload
 		3,            // Max Retries
 		0.0,          // Retry After Hours
+		snerdmq.EnqueueOpts{
+			AutoDedupe:   true,
+			UrgencyScore: 0.99,
+			Cron:         "1h", // Runs every 1 hour!
+		},
 	)
 
 	// Keep main thread alive
@@ -78,6 +83,19 @@ func main() {
 }
 ```
 
+### ⚙️ Advanced Task Configuration (v1.0.2)
+To power complex workflows, tasks can now be configured with advanced orchestration parameters via `EnqueueOpts`:
+
+* **`AutoDedupe` (`bool`)**: If set to `true`, the daemon computes a cryptographic hash of the task type and data. If an identical payload is pending execution, this new task is silently dropped.
+* **`UrgencyScore` (`float64`)**: A value (e.g. `0.99`) used to bypass the standard FIFO queue. SnerdMQ uses a Binary Max-Heap to continually float tasks with the highest urgency score to the front. Standard tasks default to `0.0`.
+* **`RateLimitGroup` (`string`)** & **`MaxPerMinute` (`int`)**: If the queue processes more tasks in this group than the allowed limit within a 60-second window, further tasks are temporarily paused.
+* **`ExecuteAt` (`string` | `time.Time`)**: A timestamp of when the job should be executed in the future.
+* **`Cron` (`string`)**: A cron expression (e.g. `"0 * * * *"`) for recurring jobs. Shorthands like `"2h"` or `"10m"` are also supported.
+
+### 🕒 Cron Jobs vs. Retryable Jobs
+> - **A Cron Job** is a *Repeatable Job* that executes again **only after a success**, on a fixed schedule.
+> - **A Retryable Job** is a *Recovery Job* that executes again **only after a failure**, attempting to recover using the `retryAfterHours` backoff.
+> - **Combined:** If a Cron Job fails, it uses `retryAfterHours` to retry until it recovers, then goes back to its standard cron schedule!
 ### ☠️ Dead Letter Queue (Handling Permanent Failures)
 
 When a task fails repeatedly and exhausts its `maxRetries`, the SnerdMQ daemon permanently moves it to the Dead Letter Queue. You can hook into this event to alert your team, update your database, or send a Slack message by registering a Max Retry Handler.
