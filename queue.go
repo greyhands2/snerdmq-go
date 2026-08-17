@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -221,6 +222,12 @@ func (q *SnerdQueue) handleEngineMessage(msg map[string]interface{}) {
 		}
 
 		ctx := context.WithValue(context.Background(), "taskID", taskID)
+		var cancel context.CancelFunc
+		if maxExecFloat, ok := msg["max_execution_seconds"].(float64); ok && maxExecFloat > 0 {
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(maxExecFloat)*time.Second)
+			defer cancel()
+		}
+
 		err := handler(ctx, taskData)
 		if err != nil {
 			q.send(map[string]interface{}{
