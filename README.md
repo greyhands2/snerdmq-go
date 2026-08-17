@@ -69,6 +69,7 @@ func main() {
 	urgencyScore := 0.99
 	cronStr := "1h"
 	webhookUrl := "https://api.example.com/webhook"
+	maxExecutionSeconds := 300
 
 	queue.Enqueue(
 		"email-123",  // Unique Task ID
@@ -83,6 +84,7 @@ func main() {
 		nil,          // Execute At
 		&cronStr,     // Cron: Runs every 1 hour!
 		&webhookUrl,  // Webhook URL: Execute via HTTP instead of local handlers
+		&maxExecutionSeconds, // Max Execution Seconds
 	)
 
 	// Keep main thread alive
@@ -99,6 +101,10 @@ To power complex workflows, tasks can now be configured with advanced orchestrat
 * **`ExecuteAt` (`string` | `time.Time`)**: A timestamp of when the job should be executed in the future.
 * **`Cron` (`string`)**: A cron expression (e.g. `"0 * * * *"`) for recurring jobs. Shorthands like `"2h"` or `"10m"` are also supported.
 * **`WebhookUrl` (`string`)**: By providing a webhook URL, SnerdMQ will completely bypass your local Go handlers and dispatch the task payload via an HTTP POST request directly to the specified URL.
+* **`MaxExecutionSeconds` (`int`)**: Optional hard timeout in seconds. If execution takes longer, it's marked as failed via a context timeout.
+
+### Note on Hard Timeouts (`MaxExecutionSeconds`)
+When `MaxExecutionSeconds` is provided, the Go SDK executes your handler with a `context.WithTimeout`. If the task takes longer than the timeout, the context is cancelled, and if your handler respects the context cancellation, it will terminate early and the task is marked as failed. In addition, the background Rust daemon will forcefully time out the IPC channel if it takes too long.
 
 ### 🌐 HTTP Webhooks (Serverless Execution)
 You can configure a task to execute externally via an HTTP POST request. By setting a `WebhookUrl`, the internal background processor will skip any registered handlers (`queue.RegisterHandler`) and directly invoke the HTTP endpoint.

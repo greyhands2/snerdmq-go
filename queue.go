@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -221,6 +222,12 @@ func (q *SnerdQueue) handleEngineMessage(msg map[string]interface{}) {
 		}
 
 		ctx := context.WithValue(context.Background(), "taskID", taskID)
+		var cancel context.CancelFunc
+		if maxExecFloat, ok := msg["max_execution_seconds"].(float64); ok && maxExecFloat > 0 {
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(maxExecFloat)*time.Second)
+			defer cancel()
+		}
+
 		err := handler(ctx, taskData)
 		if err != nil {
 			q.send(map[string]interface{}{
@@ -304,7 +311,7 @@ func (q *SnerdQueue) send(msg map[string]interface{}) {
 	q.stdin.Write(b)
 }
 
-func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetries int, retryAfterHours float64, rateLimitGroup string, maxPerMinute int, autoDedupe *bool, urgencyScore *float64, executeAt *string, cron *string, webhookUrl *string) error {
+func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetries int, retryAfterHours float64, rateLimitGroup string, maxPerMinute int, autoDedupe *bool, urgencyScore *float64, executeAt *string, cron *string, webhookUrl *string, maxExecutionSeconds *int) error {
 	q.shutdownMutex.RLock()
 	if q.process == nil || q.shuttingDown {
 		q.shutdownMutex.RUnlock()
@@ -346,6 +353,9 @@ func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetri
 	}
 	if webhookUrl != nil {
 		payload["webhook_url"] = *webhookUrl
+	}
+	if maxExecutionSeconds != nil {
+		payload["max_execution_seconds"] = *maxExecutionSeconds
 	}
 
 	ch := make(chan error, 1)
