@@ -304,7 +304,7 @@ func (q *SnerdQueue) send(msg map[string]interface{}) {
 	q.stdin.Write(b)
 }
 
-func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetries int, retryAfterHours float64, rateLimitGroup string, maxPerMinute int, autoDedupe *bool, urgencyScore *float64, executeAt *string, cron *string, webhookUrl *string) error {
+func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetries int, retryAfterHours float64, rateLimitGroup string, maxPerMinute int, autoDedupe *bool, urgencyScore *float64, executeAt *string, cron *string, webhookUrl *string, maxExecutionSeconds *int) error {
 	q.shutdownMutex.RLock()
 	if q.process == nil || q.shuttingDown {
 		q.shutdownMutex.RUnlock()
@@ -346,6 +346,9 @@ func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetri
 	}
 	if webhookUrl != nil {
 		payload["webhook_url"] = *webhookUrl
+	}
+	if maxExecutionSeconds != nil {
+		payload["max_execution_seconds"] = *maxExecutionSeconds
 	}
 
 	ch := make(chan error, 1)
