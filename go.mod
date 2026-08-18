@@ -1,4 +1,4 @@
-module github.com/greyhands2/snerdmq-go
+module github.com/speed-nerd/snerdmq-go
 
 go 1.26.1
 

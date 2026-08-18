@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	Repo    = "greyhands2/snerdmq"
+	Repo    = "speed-nerd/snerdmq"
 	Version = "v0.1.1"
 )
 

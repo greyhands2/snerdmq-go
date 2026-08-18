@@ -60,7 +60,7 @@ func NewSnerdQueue(config ...SnerdQueueConfig) (*SnerdQueue, error) {
 	}
 
 	if _, err := os.Stat(binPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("[Snerd] Binary not found at %s. Please run 'go run github.com/greyhands2/snerdmq-go/cmd/snerdmq-install@latest' or provide BinaryPath", binPath)
+		return nil, fmt.Errorf("[Snerd] Binary not found at %s. Please run 'go run github.com/speed-nerd/snerdmq-go/cmd/snerdmq-install@latest' or provide BinaryPath", binPath)
 	}
 
 	queue := &SnerdQueue{

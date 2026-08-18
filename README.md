@@ -2,7 +2,7 @@
   <h1>🚀 SnerdMQ Go SDK (v1.0.5)</h1>
   <p>A zero-config, persistent background job queue for Go microservices. The official Go client for the SnerdMQ Rust daemon.</p>
 
-  [![Go Reference](https://pkg.go.dev/badge/github.com/greyhands2/snerdmq-go.svg)](https://pkg.go.dev/github.com/greyhands2/snerdmq-go)
+  [![Go Reference](https://pkg.go.dev/badge/github.com/speed-nerd/snerdmq-go.svg)](https://pkg.go.dev/github.com/speed-nerd/snerdmq-go)
 </div>
 
 This is the official Go SDK wrapper for **SnerdMQ**. It handles all JSON-RPC communication and `os/exec` standard I/O orchestration so you can write lightning-fast background jobs in Go without blocking your application's main thread.
@@ -19,13 +19,13 @@ Installing the SDK is a simple two-step process:
 
 **1. Install the module via go get:**
 ```bash
-go get github.com/greyhands2/snerdmq-go
+go get github.com/speed-nerd/snerdmq-go
 ```
 
 **2. Download the Rust Engine:**
 Because Go modules do not support automated post-install hooks, we provide a clean CLI tool. Run this immediately after installing to fetch the correct SnerdMQ binary for your operating system (macOS/Linux/Windows). It will securely place the binary into a `./bin` folder in your project directory:
 ```bash
-go run github.com/greyhands2/snerdmq-go/cmd/snerdmq-install@latest
+go run github.com/speed-nerd/snerdmq-go/cmd/snerdmq-install@latest
 ```
 
 ---
@@ -41,7 +41,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/greyhands2/snerdmq-go"
+	"github.com/speed-nerd/snerdmq-go"
 )
 
 func main() {
@@ -198,7 +198,7 @@ By default, the SDK spins up the Rust daemon which writes the queue to a local f
 If you have multiple Go microservices running behind a load balancer and want them to share the exact same queue, simply mount a **Shared Network Drive** (like AWS EFS or NFS) to all of your servers and pass the shared path into the `SnerdQueueConfig`:
 
 ```go
-import "github.com/greyhands2/snerdmq-go"
+import "github.com/speed-nerd/snerdmq-go"
 
 // All of your Go servers point to the exact same shared file!
 // SnerdMQ's native OS file-locking guarantees zero data corruption.
