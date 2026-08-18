@@ -9,6 +9,7 @@ This is the official Go SDK wrapper for **SnerdMQ**. It handles all JSON-RPC com
 
 ## ✨ Features
 - **Ditch Redis**: The official SnerdMQ Go SDK gives your Goroutines persistent state, automatic retries, and dead-letter queues right out of the box.
+- **Progress Streaming & Live Dashboard**: Handlers can stream progress updates to a built-in React UI dashboard served by the SDK.
 - **Zero Rust Required**: Our CLI tool automatically downloads the pre-compiled C-speed Rust binary for your OS.
 - **Concurrent Safe**: Uses strict `sync.RWMutex` locks and non-blocking I/O goroutines to handle massive scale.
 
@@ -37,8 +38,8 @@ Using the SDK is incredibly simple. Initialize the queue, register your handler 
 package main
 
 import (
+	"context"
 	"fmt"
-	"time"
 
 	"github.com/greyhands2/snerdmq-go"
 )
@@ -51,10 +52,11 @@ func main() {
 	}
 
 	// 2. Register your background job logic
-	queue.RegisterHandler("send_email", func(data map[string]interface{}) error {
+	queue.RegisterHandler("send_email", func(ctx context.Context, data map[string]interface{}) error {
 		to := data["to"].(string)
 		subject := data["subject"].(string)
 		fmt.Printf("Sending email to %s with subject: %s...\n", to, subject)
+		// Return an error here to automatically trigger SnerdMQ's retry logic!
 		return nil
 	})
 
@@ -65,26 +67,44 @@ func main() {
 	fmt.Println("SnerdMQ Go SDK is listening for jobs...")
 
 	// 4. Enqueue a job from anywhere in your codebase
-	autoDedupe := true
-	urgencyScore := 0.99
-	cronStr := "1h"
-	webhookUrl := "https://api.example.com/webhook"
-	maxExecutionSeconds := 300
-
 	queue.Enqueue(
 		"email-123",  // Unique Task ID
 		"send_email", // Task Type
 		map[string]interface{}{"to": "john@wick.com", "subject": "Continental Update"}, // Payload
 		3,            // Max Retries
-		0.0,          // Retry After Hours
+		0.5,          // Retry After Hours (wait 30 minutes before retrying)
 		"email_api",  // Rate Limit Group
 		100,          // Max Per Minute
-		&autoDedupe,  // Auto Dedupe
-		&urgencyScore,// Urgency Score
+		nil,          // Auto Dedupe
+		nil,          // Urgency Score
 		nil,          // Execute At
-		&cronStr,     // Cron: Runs every 1 hour!
-		&webhookUrl,  // Webhook URL: Execute via HTTP instead of local handlers
-		&maxExecutionSeconds, // Max Execution Seconds
+		nil,          // Cron
+		nil,          // Webhook URL
+		nil,          // Max Execution Seconds
+	)
+
+	// 5. Need scheduling, deduplication, or serverless execution? All
+	// orchestration options are opt-in — combine only what you need:
+	autoDedupe := true
+	urgencyScore := 0.99
+	cronStr := "0 8 * * *"               // Run every day at 08:00
+	webhookUrl := "https://api.example.com/webhook"
+	maxExecutionSeconds := 300
+
+	queue.Enqueue(
+		"email-digest-1",
+		"send_email",
+		map[string]interface{}{"to": "john@wick.com", "subject": "Daily Digest"},
+		3,
+		0.0,
+		"",            // No rate limit group
+		0,             // No max-per-minute cap
+		&autoDedupe,   // Drop identical pending payloads
+		&urgencyScore, // Float to the front of the queue
+		nil,
+		&cronStr,      // Cron schedule
+		&webhookUrl,   // Execute via HTTP instead of local handlers
+		&maxExecutionSeconds,
 	)
 
 	// Keep main thread alive
@@ -99,6 +119,7 @@ To power complex workflows, tasks can now be configured with advanced orchestrat
 * **`UrgencyScore` (`float64`)**: A value (e.g. `0.99`) used to bypass the standard FIFO queue. SnerdMQ uses a Binary Max-Heap to continually float tasks with the highest urgency score to the front. Standard tasks default to `0.0`.
 * **`RateLimitGroup` (`string`)** & **`MaxPerMinute` (`int`)**: If the queue processes more tasks in this group than the allowed limit within a 60-second window, further tasks are temporarily paused.
 * **`ExecuteAt` (`string` | `time.Time`)**: A timestamp of when the job should be executed in the future.
+* **`RetryAfterHours` (`float64`)**: Backoff in **hours** before a failed job is retried (default `0.0`). See *Cron Jobs vs. Retryable Jobs* below.
 * **`Cron` (`string`)**: A cron expression (e.g. `"0 * * * *"`) for recurring jobs. Shorthands like `"2h"` or `"10m"` are also supported.
 * **`WebhookUrl` (`string`)**: By providing a webhook URL, SnerdMQ will completely bypass your local Go handlers and dispatch the task payload via an HTTP POST request directly to the specified URL.
 * **`MaxExecutionSeconds` (`int`)**: Optional hard timeout in seconds. If execution takes longer, it's marked as failed via a context timeout.
@@ -126,6 +147,47 @@ queue.RegisterMaxRetryHandler("send_email", func(ctx context.Context, data map[s
     return nil
 })
 ```
+
+---
+
+## 📊 Live Dashboard
+
+SnerdMQ ships with a built-in **React UI dashboard** served directly by the SDK — no extra services or ports to manage in your infrastructure. It gives you a real-time window into your queue:
+
+- **Live stats**: total enqueued, processed, and failed jobs
+- **Recent Jobs table**: per-task status (`queued`, `active`, `completed`, `failed`, `dead_letter`), retry counts, and badges showing which features a task uses (cron / webhook / timeout)
+- **Real-time Progress Stream**: live output from `YieldProgress` calls in your handlers
+
+```go
+queue, _ := snerdmq.NewSnerdQueue()
+
+// Start the built-in dashboard on http://localhost:9090
+queue.StartDashboard(9090)
+
+// ... register handlers, start listening, enqueue jobs ...
+```
+
+Then open **http://localhost:9090** in your browser. Updates are pushed to the page over WebSocket the moment jobs change state, and the dashboard also exposes a small JSON API (`/api/stats`, `/api/tasks`, `/api/progress`) if you want to build your own tooling on top.
+
+> **Note:** The dashboard serves its `static/` assets relative to your process's working directory, so run your binary from the directory that contains the `static/` folder (the SDK bundles one in its repo). `StartDashboard` only serves the UI — your jobs keep running whether or not the dashboard is open.
+
+---
+
+## 📡 Progress Reporting
+
+Long-running handlers can stream live updates to the Dashboard's Progress Stream (ideal for streaming LLM tokens or multi-step ETL work):
+
+```go
+queue.RegisterHandler("generate_report", func(ctx context.Context, data map[string]interface{}) error {
+    for step := 1; step <= 10; step++ {
+        doWork(step)
+        queue.YieldProgress(ctx, fmt.Sprintf("Step %d/10 complete", step))
+    }
+    return nil
+})
+```
+
+> `YieldProgress` must be called with the task's `context.Context` **inside a task handler** — the context is how the SDK knows which job the update belongs to.
 
 ---
 

@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,20 +19,20 @@ import (
 )
 
 type SnerdQueue struct {
-	binaryPath    string
-	storagePath   string
-	process       *exec.Cmd
-	stdin         io.WriteCloser
-	handlers      map[string]func(context.Context, map[string]interface{}) error
+	binaryPath       string
+	storagePath      string
+	process          *exec.Cmd
+	stdin            io.WriteCloser
+	handlers         map[string]func(context.Context, map[string]interface{}) error
 	maxRetryHandlers map[string]func(context.Context, map[string]interface{}) error
-	wsClients     map[*websocket.Conn]bool
-	wsClientsLock sync.RWMutex
-	handlersMutex sync.RWMutex
-	pendingAcks   map[string]chan error
-	pendingMutex  sync.RWMutex
-	shuttingDown  bool
-	shutdownMutex sync.RWMutex
-	done          chan struct{}
+	wsClients        map[*websocket.Conn]bool
+	wsClientsLock    sync.RWMutex
+	handlersMutex    sync.RWMutex
+	pendingAcks      map[string]chan error
+	pendingMutex     sync.RWMutex
+	shuttingDown     bool
+	shutdownMutex    sync.RWMutex
+	done             chan struct{}
 }
 
 type SnerdQueueConfig struct {
@@ -65,13 +64,13 @@ func NewSnerdQueue(config ...SnerdQueueConfig) (*SnerdQueue, error) {
 	}
 
 	queue := &SnerdQueue{
-		binaryPath:  binPath,
-		storagePath: storePath,
-		handlers:    make(map[string]func(context.Context, map[string]interface{}) error),
+		binaryPath:       binPath,
+		storagePath:      storePath,
+		handlers:         make(map[string]func(context.Context, map[string]interface{}) error),
 		maxRetryHandlers: make(map[string]func(context.Context, map[string]interface{}) error),
-		wsClients:   make(map[*websocket.Conn]bool),
-		pendingAcks: make(map[string]chan error),
-		done:        make(chan struct{}),
+		wsClients:        make(map[*websocket.Conn]bool),
+		pendingAcks:      make(map[string]chan error),
+		done:             make(chan struct{}),
 	}
 
 	// Handle graceful shutdown on interrupt signals
@@ -255,7 +254,7 @@ func (q *SnerdQueue) handleEngineMessage(msg map[string]interface{}) {
 	} else if action == "error" {
 		taskID, _ := msg["task_id"].(string)
 		errorMsg, _ := msg["message"].(string)
-		
+
 		q.pendingMutex.Lock()
 		if ch, exists := q.pendingAcks[taskID]; exists {
 			delete(q.pendingAcks, taskID)
@@ -266,7 +265,7 @@ func (q *SnerdQueue) handleEngineMessage(msg map[string]interface{}) {
 		q.pendingMutex.Unlock()
 	} else if action == "progress" {
 		lineBytes, _ := json.Marshal(msg)
-		
+
 		q.wsClientsLock.RLock()
 		for client := range q.wsClients {
 			client.WriteMessage(websocket.TextMessage, lineBytes)
@@ -386,7 +385,6 @@ func (q *SnerdQueue) Wait() {
 	<-q.done
 }
 
-
 func (q *SnerdQueue) YieldProgress(ctx context.Context, data interface{}) error {
 	taskID, ok := ctx.Value("taskID").(string)
 	if !ok || taskID == "" {
@@ -413,14 +411,14 @@ func (q *SnerdQueue) StartDashboard(port int) {
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		storage := "./.snerdata"
 		if q.storagePath != "" {
 			storage = q.storagePath
 		}
 		tasksPath := filepath.Join(storage, "tasks", "tasks.log")
-		
-		enqueued, processed, failed := 0, 0, 0
+
+		tasksMap := make(map[string]map[string]interface{})
 		if file, err := os.Open(tasksPath); err == nil {
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
@@ -428,16 +426,25 @@ func (q *SnerdQueue) StartDashboard(port int) {
 				if line == "" {
 					continue
 				}
-				enqueued++
-				if strings.Contains(line, `"deletedAt":"`) {
-					if strings.Contains(line, `"lastJobError":"`) {
-						failed++
-					} else {
-						processed++
+				var t map[string]interface{}
+				if json.Unmarshal([]byte(line), &t) == nil {
+					if tid, ok := t["taskId"].(string); ok {
+						tasksMap[tid] = t
 					}
 				}
 			}
 			file.Close()
+		}
+		enqueued, processed, failed := 0, 0, 0
+		for _, t := range tasksMap {
+			enqueued++
+			if t["deletedAt"] != nil {
+				if t["LastJobError"] != nil {
+					failed++
+				} else {
+					processed++
+				}
+			}
 		}
 		fmt.Fprintf(w, `{"enqueued":%d,"processed":%d,"failed":%d}`, enqueued, processed, failed)
 	})
@@ -445,13 +452,13 @@ func (q *SnerdQueue) StartDashboard(port int) {
 	mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		storage := "./.snerdata"
 		if q.storagePath != "" {
 			storage = q.storagePath
 		}
 		tasksPath := filepath.Join(storage, "tasks", "tasks.log")
-		
+
 		tasksMap := make(map[string]map[string]interface{})
 		if file, err := os.Open(tasksPath); err == nil {
 			scanner := bufio.NewScanner(file)
@@ -472,16 +479,29 @@ func (q *SnerdQueue) StartDashboard(port int) {
 
 		var res []map[string]interface{}
 		for _, t := range tasksMap {
-			status := "queued"
+			var status string
 			if t["deletedAt"] != nil {
-				if t["lastJobError"] != nil {
+				rtCount, _ := t["retryCount"].(float64)
+				maxRt, _ := t["maxRetries"].(float64)
+				if t["LastJobError"] != nil && rtCount >= maxRt {
+					status = "dead_letter"
+				} else if t["LastJobError"] != nil {
 					status = "failed"
 				} else {
 					status = "completed"
 				}
+			} else if t["LastJobError"] != nil {
+				status = "failed"
 			} else {
-				if t["lastJobError"] != nil {
-					status = "failed"
+				execAt, _ := t["executeAt"].(string)
+				if execAt != "" {
+					if et, err := time.Parse(time.RFC3339, execAt); err == nil && !et.After(time.Now()) {
+						status = "active"
+					} else {
+						status = "queued"
+					}
+				} else {
+					status = "queued"
 				}
 			}
 			rtCount, _ := t["retryCount"].(float64)
@@ -489,13 +509,16 @@ func (q *SnerdQueue) StartDashboard(port int) {
 			rtAfter, _ := t["retryAfterTime"].(string)
 
 			res = append(res, map[string]interface{}{
-				"id":             t["taskId"],
-				"type":           t["taskType"],
-				"status":         status,
-				"progress":       0,
-				"retryCount":     rtCount,
-				"maxRetries":     maxRt,
-				"retryAfterTime": rtAfter,
+				"id":                  t["taskId"],
+				"type":                t["taskType"],
+				"status":              status,
+				"progress":            0,
+				"retryCount":          rtCount,
+				"maxRetries":          maxRt,
+				"retryAfterTime":      rtAfter,
+				"cronExpression":      t["cronExpression"],
+				"webhookUrl":          t["webhookUrl"],
+				"maxExecutionSeconds": t["maxExecutionSeconds"],
 			})
 		}
 		json.NewEncoder(w).Encode(res)
