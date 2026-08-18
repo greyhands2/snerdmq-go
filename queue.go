@@ -305,9 +305,17 @@ func (q *SnerdQueue) send(msg map[string]interface{}) {
 		return
 	}
 
+	// Check if process is still alive
+	if q.process != nil && q.process.Process != nil {
+		// ProcessState is non-nil only after exit; if nil, process may still be running
+		if q.process.ProcessState != nil && q.process.ProcessState.Exited() {
+			return
+		}
+	}
+
 	b, _ := json.Marshal(msg)
 	b = append(b, '\n')
-	q.stdin.Write(b)
+	q.stdin.Write(b) //nolint:errcheck // ignore write errors when daemon dies
 }
 
 func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetries int, retryAfterHours float64, rateLimitGroup string, maxPerMinute int, autoDedupe *bool, urgencyScore *float64, executeAt *string, cron *string, webhookUrl *string, maxExecutionSeconds *int) error {
