@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>🚀 SnerdMQ Go SDK (v1.0.5)</h1>
+  <h1>🚀 SnerdMQ Go SDK (v1.0.6)</h1>
   <p>A zero-config, persistent background job queue for Go microservices. The official Go client for the SnerdMQ Rust daemon.</p>
 
   [![Go Reference](https://pkg.go.dev/badge/github.com/speed-nerd/snerdmq-go.svg)](https://pkg.go.dev/github.com/speed-nerd/snerdmq-go)
@@ -113,7 +113,7 @@ func main() {
 }
 ```
 
-### ⚙️ Advanced Task Configuration (v1.0.5)
+### ⚙️ Advanced Task Configuration (v1.0.6)
 To power complex workflows, tasks can now be configured with advanced orchestration parameters via the `Enqueue` positional arguments:
 
 * **`AutoDedupe` (`bool`)**: If set to `true`, the daemon computes a cryptographic hash of the task type and data. If an identical payload is pending execution, this new task is silently dropped.
@@ -192,20 +192,93 @@ queue.RegisterHandler("generate_report", func(ctx context.Context, data map[stri
 
 ---
 
+## 🧩 Queue Topology: One Queue or Many?
+
+### ✅ Recommended: one queue, all job types (singleton)
+
+Each `SnerdQueue` client spawns its own Rust daemon and **exclusively owns** its storage directory (`.snerdata` by default). The recommended pattern is **one client per application process**: register every job type on it and serve a single shared dashboard:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	snerdmq "github.com/speed-nerd/snerdmq-go"
+)
+
+func main() {
+	// ONE queue client for the whole app
+	queue, err := snerdmq.NewSnerdQueue()
+	if err != nil {
+		panic(err)
+	}
+
+	// Job type #1: image processing
+	queue.RegisterHandler("process_image", func(ctx context.Context, data map[string]interface{}) error {
+		fmt.Printf("Processing image: %v\n", data["image_id"])
+		return nil
+	})
+
+	// Job type #2: OTP emails — same queue, same daemon
+	queue.RegisterHandler("send_otp_email", func(ctx context.Context, data map[string]interface{}) error {
+		fmt.Printf("Sending OTP to: %v\n", data["to"])
+		return nil
+	})
+
+	queue.StartListening()
+
+	// Both job types flow through the exact same queue
+	queue.Enqueue("img-1", "process_image", map[string]interface{}{"image_id": "abc123"}, 3, 0.5, "", 0, nil, nil, nil, nil, nil, nil)
+	queue.Enqueue("otp-1", "send_otp_email", map[string]interface{}{"to": "john@wick.com"}, 3, 0.5, "", 0, nil, nil, nil, nil, nil, nil)
+
+	// ONE dashboard shows every job type
+	queue.StartDashboard(8080)
+}
+```
+
+All job types share everything: the same persistent job log, retry/DLQ pipeline, rate-limit state, stats — and one dashboard at `http://localhost:8080` showing all of them.
+
+### 🚫 Same storage twice = fails fast
+
+The daemon takes an **exclusive OS-level lock** on its storage directory at startup. A second client on the same storage fails instead of silently double-executing your jobs:
+
+```go
+first, _ := snerdmq.NewSnerdQueue() // ✅ owns .snerdata
+second, err := snerdmq.NewSnerdQueue() // ❌ daemon refuses to start:
+// "Another daemon is already running on storage '.snerdata'"
+```
+
+This applies across processes too — in a multi-worker deployment, each worker must either use its own storage directory or talk to a single shared daemon.
+
+### 🔀 Need multiple queues? Give each one its own storage
+
+```go
+images, _ := snerdmq.NewSnerdQueue(snerdmq.SnerdQueueConfig{StoragePath: ".snerdata-images"})
+emails, _ := snerdmq.NewSnerdQueue(snerdmq.SnerdQueueConfig{StoragePath: ".snerdata-emails"})
+
+images.StartDashboard(8080) // separate dashboards, so separate ports
+emails.StartDashboard(8081)
+```
+
+Now you have two fully independent engines: separate job logs, separate rate-limit state, separate dashboards. Only split when you actually need isolation (different teams, different retention, independent monitoring) — otherwise the singleton is simpler and recommended.
+
+---
+
 ## 🌍 Advanced: Distributed Scaling
 
-By default, the SDK spins up the Rust daemon which writes the queue to a local file (`.snerdata/tasks/tasks.log`). 
-
-If you have multiple Go microservices running behind a load balancer and want them to share the exact same queue, simply mount a **Shared Network Drive** (like AWS EFS or NFS) to all of your servers and pass the shared path into the `SnerdQueueConfig`:
+Because the daemon exclusively locks its storage directory, scaling horizontally means **one queue per server**, each with its own storage. Your load balancer routes requests across servers, and every server processes the jobs it enqueued:
 
 ```go
 import "github.com/speed-nerd/snerdmq-go"
 
-// All of your Go servers point to the exact same shared file!
-// SnerdMQ's native OS file-locking guarantees zero data corruption.
+// Each server runs its own daemon on its own storage dir (local disk works fine)
 queue, _ := snerdmq.NewSnerdQueue(snerdmq.SnerdQueueConfig{
-	StoragePath: "/mnt/aws-efs-shared-drive/snerd_tasks.log",
+	StoragePath: "/var/data/snerd", // per-server storage
 })
 ```
+
+A shared network drive (AWS EFS or NFS) is still a good home for that storage when a single instance needs durable state — e.g. a container that restarts but must keep its queue. Native OS file locking (`flock`) keeps writes safe — no Redis required.
 
 *Built with ❤️ for John Wick tier engineering.*
