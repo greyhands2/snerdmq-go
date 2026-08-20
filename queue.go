@@ -31,6 +31,7 @@ type SnerdQueue struct {
 	pendingAcks      map[string]chan error
 	pendingMutex     sync.RWMutex
 	shuttingDown     bool
+	engineAlive      bool
 	shutdownMutex    sync.RWMutex
 	done             chan struct{}
 }
@@ -139,6 +140,10 @@ func (q *SnerdQueue) StartListening() error {
 		return err
 	}
 
+	q.shutdownMutex.Lock()
+	q.engineAlive = true
+	q.shutdownMutex.Unlock()
+
 	// Re-register all existing handlers
 	q.handlersMutex.RLock()
 	for taskType := range q.handlers {
@@ -179,6 +184,19 @@ func (q *SnerdQueue) readStdout(stdout io.Reader) {
 	if !isShuttingDown {
 		fmt.Fprintf(os.Stderr, "[Snerd] Engine process terminated unexpectedly.\n")
 	}
+
+	// Engine is gone — it can never ack. Reject all pending enqueues so
+	// callers fail fast instead of blocking on their ack channel forever.
+	q.shutdownMutex.Lock()
+	q.engineAlive = false
+	q.shutdownMutex.Unlock()
+	q.pendingMutex.Lock()
+	for id, ch := range q.pendingAcks {
+		delete(q.pendingAcks, id)
+		ch <- fmt.Errorf("[Snerd] Engine terminated before ack for task '%s'", id)
+	}
+	q.pendingMutex.Unlock()
+
 	close(q.done)
 }
 
@@ -323,6 +341,10 @@ func (q *SnerdQueue) Enqueue(taskID, taskType string, data interface{}, maxRetri
 	if q.process == nil || q.shuttingDown {
 		q.shutdownMutex.RUnlock()
 		return fmt.Errorf("[Snerd] Cannot enqueue task: Queue is not running. Call StartListening() first.")
+	}
+	if !q.engineAlive {
+		q.shutdownMutex.RUnlock()
+		return fmt.Errorf("[Snerd] Cannot enqueue task: engine is not running.")
 	}
 	q.shutdownMutex.RUnlock()
 
